@@ -25,5 +25,14 @@ func (b *Breaker) HalfOpenTrial(ctx context.Context, node *model.Node, pool Acqu
 	if b.State() != HalfOpen {
 		return ErrNoTrial
 	}
-	return rt(nil)
+	conn, err := pool.Acquire(ctx, node)
+	if err != nil {
+		return err
+	}
+	// Return the trial connection to the pool once the probe finishes so the
+	// half-open path reuses pooled connections instead of dialling upstream
+	// directly and abandoning the connection to leak the pool one probe at a
+	// time.
+	defer pool.Release(conn, node)
+	return rt(conn.Raw)
 }
