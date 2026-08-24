@@ -96,7 +96,14 @@ func (rt *Router) Serve(ctx context.Context, key string, rt2 RoundTripper) error
 		serveErr := rt2(ctx, node, key)
 		_ = rt.pools.Release(conn, node)
 		if serveErr == nil {
-			rt.sessions.Bind(key, node.ID)
+			// A retry only routes the current request to a fallback node; it must
+			// not rewrite the sticky binding target, otherwise a single failed
+			// attempt permanently pins the key to whatever backup happened to
+			// succeed, skewing the hash distribution. Only the first attempt (the
+			// bound node or the ring owner) is allowed to establish a binding.
+			if attempted == 0 {
+				rt.sessions.Bind(key, node.ID)
+			}
 			return nil
 		}
 		// The preferred node failed; drop a stale binding to it so the next
