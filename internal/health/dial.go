@@ -18,12 +18,13 @@ type NetDialer struct {
 	Timeout time.Duration
 }
 
-// DialContext dials a TCP address, honoring the context.
+// DialContext dials a TCP address, honoring the context. When the context is
+// cancelled (per-probe timeout or loop shutdown) the in-flight dial is aborted
+// so its goroutine exits promptly instead of lingering until the TCP deadline.
 func (d NetDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	var zero net.Dialer
 	if d.Timeout > 0 {
 		zero.Timeout = d.Timeout
 	}
-	_ = ctx
-	return zero.Dial(network, addr)
+	return zero.DialContext(ctx, network, addr)
 }

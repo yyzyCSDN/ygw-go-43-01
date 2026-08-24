@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -34,7 +35,11 @@ func NewProber(opts ProbeOptions) *Prober {
 	return &Prober{opts: opts}
 }
 
-// Probe runs one probe against a node and returns the result.
+// Probe runs one probe against a node and returns the result. It enforces
+// p.opts.Timeout via a child context so that a timeout cancels the in-flight
+// dial all the way down rather than leaving it dangling. A result produced
+// after the deadline is marked stale so callers can drop it instead of letting
+// a late response overwrite fresh node state.
 func (p *Prober) Probe(ctx context.Context, node *model.Node) model.ProbeResult {
 	p.mu.Lock()
 	p.pending++
@@ -45,13 +50,22 @@ func (p *Prober) Probe(ctx context.Context, node *model.Node) model.ProbeResult 
 		p.mu.Unlock()
 	}()
 
+	timeout := p.opts.Timeout
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	start := time.Now()
-	conn, err := p.opts.Dialer.DialContext(context.Background(), "tcp", node.Addr)
+	conn, err := p.opts.Dialer.DialContext(probeCtx, "tcp", node.Addr)
+	latency := time.Since(start)
 	if err != nil {
-		return model.ProbeResult{NodeID: node.ID, OK: false, Latency: time.Since(start), Err: err}
+		stale := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+		return model.ProbeResult{NodeID: node.ID, OK: false, Latency: latency, Err: err, Stale: stale}
 	}
 	_ = conn.Close()
-	return model.ProbeResult{NodeID: node.ID, OK: true, Latency: time.Since(start)}
+	return model.ProbeResult{NodeID: node.ID, OK: true, Latency: latency}
 }
 
 // Pending returns the number of in-flight probes.
